@@ -430,7 +430,7 @@ void write_spectrum(const char *filename, StellarData *data, SpectrumData *spec)
     fprintf(fp, "#\n");
     fprintf(fp, "# ========================================================================\n");
     fprintf(fp, "#\n");
-    fprintf(fp, "# %18s  %18s  %18s  %18s\n", 
+    fprintf(fp, "# %18s \t %18s \t %18s \t %18s\n", 
             "Frequency_Hz", "Wavelength_Ang", "Flux_nu", "Flux_lambda");
     fprintf(fp, "#\n");
     
@@ -441,7 +441,7 @@ void write_spectrum(const char *filename, StellarData *data, SpectrumData *spec)
         double flux_nu = spec->spectrum[i];
         double flux_lambda = flux_nu * C_CGS / (wavelength * wavelength * 1e16);
         
-        fprintf(fp, "  %18.10e  %18.10e  %18.10e  %18.10e\n",
+        fprintf(fp, "  %18.10e \t %18.10e \t %18.10e \t  %18.10e\n",
                 freq, wavelength, flux_nu, flux_lambda);
     }
     
