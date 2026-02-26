@@ -238,6 +238,180 @@ double opacity_kramers(double rho, double T) {
 }
 
 /*
+ * Free-free opacity κ_ff ∝ ρ T^(-7/2) ν^(-3) in cm²/g
+ * This is thermal bremsstrahlung absorption
+ */
+double opacity_freefree(double rho, double T, double nu) {
+    /* Add floors to avoid issues */
+    if (rho < 1e-15) rho = 1e-15;
+    if (T < 1000.0) T = 1000.0;
+    if (nu < 1e13) nu = 1e13;
+    
+    /* Normalization for free-free (approximate, includes Gaunt factor ~ 1) */
+    double kappa_ff_0 = 3.7e8;  /* cm^5 g^-2 K^3.5 Hz^3 */
+    
+    return kappa_ff_0 * rho * pow(T, -3.5) * pow(nu, -3.0);
+}
+
+/*
+ * Gray (frequency-independent) opacity
+ * This lets the Planck function shape dominate, showing Wien peak
+ */
+double opacity_gray(double rho, double T) {
+    /* Add floors */
+    if (rho < 1e-15) rho = 1e-15;
+    if (T < 1000.0) T = 1000.0;
+    
+    /* Simple opacity that scales with density but not strongly with T */
+    /* This gives roughly constant optical depth, allowing blackbody to show through */
+    return 0.1 * pow(rho / 1e-6, 0.5);  /* cm²/g */
+}
+
+/*
+ * Calculate Ni-56 decay luminosity
+ * Uses Ni-56 → Co-56 → Fe-56 decay chain
+ * 
+ * Parameters:
+ *   ni56_mass_msun - Initial Ni-56 mass in solar masses
+ *   time_days - Time since explosion in days
+ * 
+ * Returns: Luminosity in erg/s
+ */
+double ni56_luminosity(double ni56_mass_msun, double time_days) {
+    /* Decay constants */
+    double tau_ni = NI56_HALFLIFE / log(2.0);  /* Mean lifetime (days) */
+    double tau_co = CO56_HALFLIFE / log(2.0);  /* Mean lifetime (days) */
+    
+    /* Mass of Ni-56 and Co-56 at time t */
+    double m_ni = ni56_mass_msun * exp(-time_days / tau_ni);
+    double m_co = ni56_mass_msun * (tau_co / (tau_co - tau_ni)) * 
+                  (exp(-time_days / tau_ni) - exp(-time_days / tau_co));
+    
+    /* Luminosity from Ni-56 and Co-56 decay */
+    /* Q_Ni = 1.75 MeV per decay, Q_Co = 3.61 MeV per decay */
+    double L_ni = m_ni * (NI56_ENERGY / tau_ni) * exp(-time_days / tau_ni);
+    double L_co = m_co * (CO56_ENERGY / tau_co) * exp(-time_days / tau_co);
+    
+    /* Convert from erg/day to erg/s */
+    return (L_ni + L_co) / SECONDS_PER_DAY;
+}
+
+/*
+ * Calculate Ni-56 heating rate for a cell
+ * Heating depends on whether cell is inside Ni-56 region
+ * and on gamma-ray trapping efficiency
+ * 
+ * Returns: Heating rate in erg/g/s
+ */
+double ni56_heating_rate(StellarData *data, int i, int j, int k) {
+    if (!data->enable_ni56) return 0.0;
+    
+    /* Calculate distance from origin */
+    double x = data->xmin + (i + 0.5) * data->dx;
+    double y = data->ymin + (j + 0.5) * data->dy;
+    double z = data->zmin + (k + 0.5) * data->dz;
+    double r = sqrt(x*x + y*y + z*z);
+    
+    /* Check if cell is within Ni-56 region */
+    if (r > data->ni56_radius) return 0.0;
+    
+    /* Get time in days */
+    double time_days = data->time_since_explosion / SECONDS_PER_DAY;
+    
+    /* Total luminosity from Ni-56 decay */
+    double L_total = ni56_luminosity(data->ni56_mass, time_days);
+    
+    /* Volume of Ni-56 region (in code units) */
+    double V_ni56 = (4.0 / 3.0) * M_PI * pow(data->ni56_radius, 3.0);
+    
+    /* Convert to physical volume */
+    double V_ni56_phys = V_ni56 * pow(data->L_unit, 3.0);  /* cm³ */
+    
+    /* Mass in Ni-56 region (approximate as uniform density in region) */
+    double M_ni56_region = 0.0;
+    for (int ii = 0; ii < data->nx; ii++) {
+        for (int jj = 0; jj < data->ny; jj++) {
+            for (int kk = 0; kk < data->nz; kk++) {
+                double xx = data->xmin + (ii + 0.5) * data->dx;
+                double yy = data->ymin + (jj + 0.5) * data->dy;
+                double zz = data->zmin + (kk + 0.5) * data->dz;
+                double rr = sqrt(xx*xx + yy*yy + zz*zz);
+                if (rr <= data->ni56_radius) {
+                    double cell_volume = data->dx * data->dy * data->dz * pow(data->L_unit, 3.0);
+                    M_ni56_region += data->density_cgs[ii][jj][kk] * cell_volume;
+                }
+            }
+        }
+    }
+    
+    if (M_ni56_region < 1e-10) return 0.0;
+    
+    /* Gamma-ray trapping efficiency */
+    /* For now, assume full trapping (optically thick approximation) */
+    /* More sophisticated: f_trap = 1 - exp(-tau_gamma) */
+    double f_trap = 1.0;
+    
+    /* Heating rate per unit mass */
+    double heating = (L_total * f_trap) / M_ni56_region;  /* erg/g/s */
+    
+    return heating;
+}
+
+/*
+ * Apply Ni-56 decay heating to temperature field
+ * This modifies the temperature based on energy deposition
+ */
+void apply_ni56_heating(StellarData *data) {
+    if (!data->enable_ni56) return;
+    
+    printf("\nApplying Ni-56 decay heating...\n");
+    printf("  Ni-56 mass:    %.3f M_sun\n", data->ni56_mass);
+    printf("  Ni-56 radius:  %.3f (code units) = %.3f R_sun\n", 
+           data->ni56_radius, data->ni56_radius * data->L_unit / R_SUN_CGS);
+    printf("  Time:          %.2f days\n", 
+           data->time_since_explosion / SECONDS_PER_DAY);
+    
+    double time_days = data->time_since_explosion / SECONDS_PER_DAY;
+    double L_total = ni56_luminosity(data->ni56_mass, time_days);
+    printf("  Total luminosity: %.3e erg/s\n", L_total);
+    
+    /* Apply heating to cells in Ni-56 region */
+    double total_heating_energy = 0.0;
+    int heated_cells = 0;
+    
+    for (int i = 0; i < data->nx; i++) {
+        for (int j = 0; j < data->ny; j++) {
+            for (int k = 0; k < data->nz; k++) {
+                double heating_rate = ni56_heating_rate(data, i, j, k);
+                
+                if (heating_rate > 0.0) {
+                    /* Add energy to cell */
+                    /* dE/dt = heating_rate * mass */
+                    double cell_volume = data->dx * data->dy * data->dz * 
+                                       pow(data->L_unit, 3.0);
+                    double cell_mass = data->density_cgs[i][j][k] * cell_volume;
+                    double dE = heating_rate * cell_mass;  /* erg/s */
+                    
+                    /* Convert to temperature increase */
+                    /* E = (3/2) n k T = (3/2) (rho/mu m_p) k T */
+                    /* dT = dE * (2 mu m_p) / (3 rho V k) */
+                    double dT = (dE * 2.0 * MU * M_P_CGS) / 
+                               (3.0 * data->density_cgs[i][j][k] * cell_volume * K_CGS);
+                    
+                    data->temperature[i][j][k] += dT;
+                    
+                    total_heating_energy += dE;
+                    heated_cells++;
+                }
+            }
+        }
+    }
+    
+    printf("  Heated %d cells\n", heated_cells);
+    printf("  Total heating rate: %.3e erg/s\n", total_heating_energy);
+}
+
+/*
  * Get cell value with axis permutation
  */
 double get_cell_value_3d(double ***arr, int i, int j, int k, 
@@ -262,6 +436,7 @@ void raytrace_spectrum(StellarData *data, SpectrumData *spec) {
     printf("\n=== Ray Tracing Along %c-Axis ===\n", spec->axis);
     printf("Frequency range: %.2e - %.2e Hz\n", spec->freq_min, spec->freq_max);
     printf("Number of frequencies: %d\n", spec->nfreq);
+    printf("Opacity model: %s\n", spec->opacity_type);
     
     /* Allocate frequency and spectrum arrays */
     spec->frequencies = (double*)malloc(spec->nfreq * sizeof(double));
@@ -341,8 +516,16 @@ void raytrace_spectrum(StellarData *data, SpectrumData *spec) {
                     /* Source function (LTE: S_ν = B_ν) */
                     double B_nu = planck_function(nu_emit, T_cell);
                     
-                    /* Opacity */
-                    double kappa = opacity_kramers(rho_cell, T_cell);
+                    /* Opacity - select based on opacity_type */
+                    double kappa;
+                    if (strcmp(spec->opacity_type, "freefree") == 0) {
+                        kappa = opacity_freefree(rho_cell, T_cell, nu_emit);
+                    } else if (strcmp(spec->opacity_type, "gray") == 0) {
+                        kappa = opacity_gray(rho_cell, T_cell);
+                    } else {
+                        /* Default to Kramers */
+                        kappa = opacity_kramers(rho_cell, T_cell);
+                    }
                     
                     /* Optical depth through cell */
                     double tau = kappa * rho_cell * ds;
@@ -390,7 +573,21 @@ void write_spectrum(const char *filename, StellarData *data, SpectrumData *spec)
     fprintf(fp, "#   Grid dimensions:  %d × %d × %d\n", data->nx, data->ny, data->nz);
     fprintf(fp, "#   Viewing axis:     %c-axis\n", spec->axis);
     fprintf(fp, "#   Doppler shifting: %s\n", spec->include_doppler ? "Yes" : "No");
-    fprintf(fp, "#   Opacity model:    Kramers (bound-free)\n");
+    fprintf(fp, "#   Opacity model:    %s\n", spec->opacity_type);
+    fprintf(fp, "#\n");
+    fprintf(fp, "# Ni-56 DECAY HEATING:\n");
+    if (data->enable_ni56) {
+        fprintf(fp, "#   Enabled:          Yes\n");
+        fprintf(fp, "#   Ni-56 mass:       %.3f M_sun\n", data->ni56_mass);
+        fprintf(fp, "#   Ni-56 radius:     %.3f (code units)\n", data->ni56_radius);
+        fprintf(fp, "#   Time since explosion: %.2f days\n", 
+                data->time_since_explosion / SECONDS_PER_DAY);
+        double time_days = data->time_since_explosion / SECONDS_PER_DAY;
+        fprintf(fp, "#   Decay luminosity: %.3e erg/s\n", 
+                ni56_luminosity(data->ni56_mass, time_days));
+    } else {
+        fprintf(fp, "#   Enabled:          No\n");
+    }
     fprintf(fp, "#\n");
     fprintf(fp, "# CODE UNITS:\n");
     fprintf(fp, "#   Length unit:   %.3e cm\n", data->L_unit);
@@ -430,7 +627,7 @@ void write_spectrum(const char *filename, StellarData *data, SpectrumData *spec)
     fprintf(fp, "#\n");
     fprintf(fp, "# ========================================================================\n");
     fprintf(fp, "#\n");
-    fprintf(fp, "# %18s \t %18s \t %18s \t %18s\n", 
+    fprintf(fp, "# %18s  %18s  %18s  %18s\n", 
             "Frequency_Hz", "Wavelength_Ang", "Flux_nu", "Flux_lambda");
     fprintf(fp, "#\n");
     
@@ -441,7 +638,7 @@ void write_spectrum(const char *filename, StellarData *data, SpectrumData *spec)
         double flux_nu = spec->spectrum[i];
         double flux_lambda = flux_nu * C_CGS / (wavelength * wavelength * 1e16);
         
-        fprintf(fp, "  %18.10e \t %18.10e \t %18.10e \t  %18.10e\n",
+        fprintf(fp, "  %18.10e  %18.10e  %18.10e  %18.10e\n",
                 freq, wavelength, flux_nu, flux_lambda);
     }
     

@@ -25,6 +25,13 @@
 #define KAPPA_0 4.0e24          /* Kramers opacity normalization */
 #define MU 0.6                  /* Mean molecular weight (ionized gas) */
 
+/* Nickel-56 decay parameters */
+#define NI56_HALFLIFE 6.075     /* Ni-56 half-life (days) */
+#define CO56_HALFLIFE 77.27     /* Co-56 half-life (days) */
+#define NI56_ENERGY 1.75e49     /* Energy per solar mass of Ni-56 decay (erg/M_sun) */
+#define CO56_ENERGY 3.61e49     /* Energy per solar mass of Co-56 decay (erg/M_sun) */
+#define SECONDS_PER_DAY 86400.0 /* Seconds per day */
+
 /* Grid and frequency parameters */
 #define MAX_GRID_SIZE 256       /* Maximum grid dimension */
 #define MAX_FREQ 200            /* Maximum number of frequency bins */
@@ -57,6 +64,12 @@ typedef struct {
     /* Stellar parameters */
     double star_mass;           /* Stellar mass (solar masses) */
     double star_radius;         /* Stellar radius (solar radii) */
+    
+    /* Ni-56 decay parameters */
+    int enable_ni56;            /* Enable Ni-56 decay heating (0 or 1) */
+    double ni56_mass;           /* Initial Ni-56 mass (solar masses) */
+    double ni56_radius;         /* Radius containing Ni-56 (code units) */
+    double time_since_explosion;/* Time since explosion (seconds) */
 } StellarData;
 
 typedef struct {
@@ -69,6 +82,7 @@ typedef struct {
     /* Ray tracing parameters */
     char axis;                  /* Viewing axis ('x', 'y', or 'z') */
     int include_doppler;        /* Include Doppler shifting (0 or 1) */
+    char opacity_type[20];      /* Opacity model: "kramers", "freefree", "gray" */
 } SpectrumData;
 
 /* Function declarations */
@@ -87,8 +101,15 @@ void convert_to_physical_units(StellarData *data);
 /* Physics */
 double planck_function(double nu, double T);
 double opacity_kramers(double rho, double T);
+double opacity_freefree(double rho, double T, double nu);
+double opacity_gray(double rho, double T);
 double get_cell_value_3d(double ***arr, int i, int j, int k, 
                          int nx, int ny, int nz, char axis);
+
+/* Ni-56 decay heating */
+double ni56_luminosity(double ni56_mass_msun, double time_days);
+double ni56_heating_rate(StellarData *data, int i, int j, int k);
+void apply_ni56_heating(StellarData *data);
 
 /* Ray tracing */
 void raytrace_spectrum(StellarData *data, SpectrumData *spec);
