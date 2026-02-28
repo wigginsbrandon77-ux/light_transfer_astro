@@ -229,19 +229,19 @@ double planck_function(double nu, double T) {
 /*
  * Kramers opacity κ = κ₀ ρ T^(-3.5) in cm²/g
  */
-double opacity_kramers(double rho, double T) {
+double opacity_kramers(double rho, double T, double multiplier) {
     /* Add floors to avoid issues */
     if (rho < 1e-15) rho = 1e-15;
     if (T < 1000.0) T = 1000.0;
     
-    return KAPPA_0 * rho * pow(T, -3.5);
+    return multiplier * KAPPA_0 * rho * pow(T, -3.5);
 }
 
 /*
  * Free-free opacity κ_ff ∝ ρ T^(-7/2) ν^(-3) in cm²/g
  * This is thermal bremsstrahlung absorption
  */
-double opacity_freefree(double rho, double T, double nu) {
+double opacity_freefree(double rho, double T, double nu, double multiplier) {
     /* Add floors to avoid issues */
     if (rho < 1e-15) rho = 1e-15;
     if (T < 1000.0) T = 1000.0;
@@ -250,21 +250,21 @@ double opacity_freefree(double rho, double T, double nu) {
     /* Normalization for free-free (approximate, includes Gaunt factor ~ 1) */
     double kappa_ff_0 = 3.7e8;  /* cm^5 g^-2 K^3.5 Hz^3 */
     
-    return kappa_ff_0 * rho * pow(T, -3.5) * pow(nu, -3.0);
+    return multiplier * kappa_ff_0 * rho * pow(T, -3.5) * pow(nu, -3.0);
 }
 
 /*
  * Gray (frequency-independent) opacity
  * This lets the Planck function shape dominate, showing Wien peak
  */
-double opacity_gray(double rho, double T) {
+double opacity_gray(double rho, double T, double multiplier) {
     /* Add floors */
     if (rho < 1e-15) rho = 1e-15;
     if (T < 1000.0) T = 1000.0;
     
     /* Simple opacity that scales with density but not strongly with T */
     /* This gives roughly constant optical depth, allowing blackbody to show through */
-    return 0.1 * pow(rho / 1e-6, 0.5);  /* cm²/g */
+    return multiplier * 0.1 * pow(rho / 1e-6, 0.5);  /* cm²/g */
 }
 
 /*
@@ -432,7 +432,154 @@ double get_cell_value_3d(double ***arr, int i, int j, int k,
 /*
  * Perform ray tracing to compute spectrum
  */
+/*
+ * Radial ray tracing for octant geometry
+ * Traces rays from origin (dense core) outward in multiple directions
+ * This properly samples spherically symmetric explosions in octant coordinates
+ */
+void raytrace_octant_radial(StellarData *data, SpectrumData *spec) {
+    printf("\n=== Radial Ray Tracing (Octant Mode) ===\n");
+    printf("Dense core at origin (0,0,0)\n");
+    printf("Tracing %d radial rays from center outward\n", spec->nrays_octant);
+    printf("Frequency range: %.2e - %.2e Hz\n", spec->freq_min, spec->freq_max);
+    printf("Opacity model: %s (multiplier: %.1f)\n", spec->opacity_type, spec->opacity_multiplier);
+    
+    /* Allocate frequency and spectrum arrays */
+    spec->frequencies = (double*)malloc(spec->nfreq * sizeof(double));
+    spec->spectrum = (double*)calloc(spec->nfreq, sizeof(double));
+    
+    /* Create log-spaced frequency grid */
+    double log_fmin = log10(spec->freq_min);
+    double log_fmax = log10(spec->freq_max);
+    for (int ifreq = 0; ifreq < spec->nfreq; ifreq++) {
+        double log_f = log_fmin + (log_fmax - log_fmin) * ifreq / (spec->nfreq - 1);
+        spec->frequencies[ifreq] = pow(10.0, log_f);
+    }
+    
+    /* Cell size in physical units */
+    double dx = data->dx * data->L_unit;
+    double dy = data->dy * data->L_unit;
+    double dz = data->dz * data->L_unit;
+    double ds = sqrt(dx*dx + dy*dy + dz*dz);  /* Diagonal step size */
+    
+    /* Maximum radius in grid */
+    double r_max = sqrt(data->nx*data->nx + data->ny*data->ny + data->nz*data->nz);
+    
+    /* Sample directions in octant (0 < θ < π/2, 0 < φ < π/2) */
+    int n_theta = spec->nrays_octant;
+    int n_phi = spec->nrays_octant;
+    
+    printf("Sampling %d × %d = %d directions in octant\n", n_theta, n_phi, n_theta * n_phi);
+    
+    /* Loop over frequencies */
+    for (int ifreq = 0; ifreq < spec->nfreq; ifreq++) {
+        double nu = spec->frequencies[ifreq];
+        
+        if ((ifreq + 1) % 10 == 0 || ifreq == spec->nfreq - 1) {
+            printf("Processing frequency %d/%d (%.2e Hz)\n", 
+                   ifreq + 1, spec->nfreq, nu);
+        }
+        
+        /* Loop over directions */
+        for (int itheta = 0; itheta < n_theta; itheta++) {
+            for (int iphi = 0; iphi < n_phi; iphi++) {
+                /* Direction angles (sample octant: 0 to π/2) */
+                double theta = (M_PI / 2.0) * (itheta + 0.5) / n_theta;
+                double phi = (M_PI / 2.0) * (iphi + 0.5) / n_phi;
+                
+                /* Direction vector */
+                double dir_x = sin(theta) * cos(phi);
+                double dir_y = sin(theta) * sin(phi);
+                double dir_z = cos(theta);
+                
+                /* Trace ray from origin outward */
+                double I_nu = 0.0;
+                
+                /* Integrate along ray from center to edge */
+                for (double r = 0; r < r_max; r += 1.0) {
+                    /* Position in grid */
+                    double x = r * dir_x;
+                    double y = r * dir_y;
+                    double z = r * dir_z;
+                    
+                    /* Grid indices */
+                    int i = (int)x;
+                    int j = (int)y;
+                    int k = (int)z;
+                    
+                    /* Check bounds */
+                    if (i < 0 || i >= data->nx || 
+                        j < 0 || j >= data->ny || 
+                        k < 0 || k >= data->nz) {
+                        break;
+                    }
+                    
+                    /* Get cell values */
+                    double rho_cell = data->density_cgs[i][j][k];
+                    double T_cell = data->temperature[i][j][k];
+                    
+                    /* Velocity in ray direction */
+                    double v_r = data->vx_cgs[i][j][k] * dir_x +
+                                data->vy_cgs[i][j][k] * dir_y +
+                                data->vz_cgs[i][j][k] * dir_z;
+                    
+                    /* Skip low-density regions */
+                    if (rho_cell < 1e-15) continue;
+                    
+                    /* Apply Doppler shift if requested */
+                    double nu_emit = nu;
+                    if (spec->include_doppler) {
+                        nu_emit = nu * (1.0 + v_r / C_CGS);
+                    }
+                    
+                    /* Source function */
+                    double B_nu = planck_function(nu_emit, T_cell);
+                    
+                    /* Opacity */
+                    double kappa;
+                    if (strcmp(spec->opacity_type, "freefree") == 0) {
+                        kappa = opacity_freefree(rho_cell, T_cell, nu_emit, spec->opacity_multiplier);
+                    } else if (strcmp(spec->opacity_type, "gray") == 0) {
+                        kappa = opacity_gray(rho_cell, T_cell, spec->opacity_multiplier);
+                    } else {
+                        kappa = opacity_kramers(rho_cell, T_cell, spec->opacity_multiplier);
+                    }
+                    
+                    /* Optical depth through step */
+                    double tau = kappa * rho_cell * ds;
+                    
+                    /* Radiative transfer */
+                    if (tau < 1e-4) {
+                        I_nu += B_nu * tau;
+                    } else {
+                        double exp_tau = exp(-tau);
+                        I_nu = I_nu * exp_tau + B_nu * (1.0 - exp_tau);
+                    }
+                }
+                
+                /* Add to spectrum (weighted by solid angle) */
+                double weight = sin(theta);  /* Solid angle weighting */
+                spec->spectrum[ifreq] += I_nu * weight;
+            }
+        }
+    }
+    
+    /* Normalize by total solid angle */
+    double norm = 1.0 / (n_theta * n_phi);
+    for (int ifreq = 0; ifreq < spec->nfreq; ifreq++) {
+        spec->spectrum[ifreq] *= norm;
+    }
+    
+    printf("Radial ray tracing complete!\n");
+}
+
 void raytrace_spectrum(StellarData *data, SpectrumData *spec) {
+    /* Use radial ray tracing for octant geometry */
+    if (spec->octant_mode) {
+        raytrace_octant_radial(data, spec);
+        return;
+    }
+    
     printf("\n=== Ray Tracing Along %c-Axis ===\n", spec->axis);
     printf("Frequency range: %.2e - %.2e Hz\n", spec->freq_min, spec->freq_max);
     printf("Number of frequencies: %d\n", spec->nfreq);
@@ -519,12 +666,12 @@ void raytrace_spectrum(StellarData *data, SpectrumData *spec) {
                     /* Opacity - select based on opacity_type */
                     double kappa;
                     if (strcmp(spec->opacity_type, "freefree") == 0) {
-                        kappa = opacity_freefree(rho_cell, T_cell, nu_emit);
+                        kappa = opacity_freefree(rho_cell, T_cell, nu_emit, spec->opacity_multiplier);
                     } else if (strcmp(spec->opacity_type, "gray") == 0) {
-                        kappa = opacity_gray(rho_cell, T_cell);
+                        kappa = opacity_gray(rho_cell, T_cell, spec->opacity_multiplier);
                     } else {
                         /* Default to Kramers */
-                        kappa = opacity_kramers(rho_cell, T_cell);
+                        kappa = opacity_kramers(rho_cell, T_cell, spec->opacity_multiplier);
                     }
                     
                     /* Optical depth through cell */
@@ -571,9 +718,17 @@ void write_spectrum(const char *filename, StellarData *data, SpectrumData *spec)
     fprintf(fp, "#   Stellar mass:     %.2f M_sun\n", data->star_mass);
     fprintf(fp, "#   Stellar radius:   %.2f R_sun\n", data->star_radius);
     fprintf(fp, "#   Grid dimensions:  %d × %d × %d\n", data->nx, data->ny, data->nz);
-    fprintf(fp, "#   Viewing axis:     %c-axis\n", spec->axis);
+    if (spec->octant_mode) {
+        fprintf(fp, "#   Geometry:         Octant (radial rays from origin)\n");
+        fprintf(fp, "#   Number of rays:   %d × %d = %d\n", 
+                spec->nrays_octant, spec->nrays_octant, 
+                spec->nrays_octant * spec->nrays_octant);
+    } else {
+        fprintf(fp, "#   Viewing axis:     %c-axis\n", spec->axis);
+    }
     fprintf(fp, "#   Doppler shifting: %s\n", spec->include_doppler ? "Yes" : "No");
     fprintf(fp, "#   Opacity model:    %s\n", spec->opacity_type);
+    fprintf(fp, "#   Opacity multiplier: %.2f\n", spec->opacity_multiplier);
     fprintf(fp, "#\n");
     fprintf(fp, "# Ni-56 DECAY HEATING:\n");
     if (data->enable_ni56) {

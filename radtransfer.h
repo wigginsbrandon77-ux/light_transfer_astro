@@ -83,6 +83,9 @@ typedef struct {
     char axis;                  /* Viewing axis ('x', 'y', or 'z') */
     int include_doppler;        /* Include Doppler shifting (0 or 1) */
     char opacity_type[20];      /* Opacity model: "kramers", "freefree", "gray" */
+    double opacity_multiplier;  /* Opacity boost factor (default: 1.0) */
+    int octant_mode;            /* Use octant geometry (dense core at origin) */
+    int nrays_octant;           /* Number of radial rays for octant mode */
 } SpectrumData;
 
 /* Function declarations */
@@ -100,9 +103,9 @@ void convert_to_physical_units(StellarData *data);
 
 /* Physics */
 double planck_function(double nu, double T);
-double opacity_kramers(double rho, double T);
-double opacity_freefree(double rho, double T, double nu);
-double opacity_gray(double rho, double T);
+double opacity_kramers(double rho, double T, double multiplier);
+double opacity_freefree(double rho, double T, double nu, double multiplier);
+double opacity_gray(double rho, double T, double multiplier);
 double get_cell_value_3d(double ***arr, int i, int j, int k, 
                          int nx, int ny, int nz, char axis);
 

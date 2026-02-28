@@ -18,16 +18,22 @@ void print_usage(const char *prog_name) {
     printf("\nUsage: %s <vtk_file> [output_file] [options]\n\n", prog_name);
     printf("Options:\n");
     printf("  -axis <x|y|z>       Viewing axis (default: z)\n");
+    printf("  -octant <nrays>     Use octant geometry with radial rays (default: off)\n");
+    printf("                      nrays = number of rays per angle (e.g., 10 for 10×10=100 rays)\n");
     printf("  -nfreq <int>        Number of frequency bins (default: 50)\n");
     printf("  -mass <float>       Stellar mass in M_sun (default: 8.0)\n");
     printf("  -radius <float>     Stellar radius in R_sun (default: 7.0)\n");
     printf("  -opacity <type>     Opacity model: kramers, freefree, gray (default: kramers)\n");
+    printf("  -kappa <factor>     Opacity multiplier (default: 1.0, try 10-100 for optically thick)\n");
     printf("  -doppler            Include Doppler shifting (default: off)\n");
     printf("\n");
     printf("Ni-56 decay heating:\n");
     printf("  -ni56 <mass>        Enable Ni-56 heating with given mass in M_sun\n");
     printf("  -ni56_radius <r>    Radius containing Ni-56 in code units (default: 0.3)\n");
     printf("  -time <days>        Time since explosion in days (default: 10)\n");
+    printf("\nGeometry modes:\n");
+    printf("  Default: Cartesian rays along axes (fast, but misses core in octant)\n");
+    printf("  -octant: Radial rays from origin (correct for octant with core at 0,0,0)\n");
     printf("\nOpacity models:\n");
     printf("  kramers   - Bound-free absorption, κ ∝ ρ T^-3.5 (frequency independent)\n");
     printf("  freefree  - Free-free absorption, κ ∝ ρ T^-3.5 ν^-3 (shows frequency dependence)\n");
@@ -35,7 +41,7 @@ void print_usage(const char *prog_name) {
     printf("\nExample:\n");
     printf("  %s output_000050.vtk spectrum.txt -opacity gray -nfreq 100\n", 
            prog_name);
-    printf("  %s output_000050.vtk spectrum.txt -ni56 0.6 -time 20\n\n", 
+    printf("  %s output_000050.vtk spectrum.txt -octant 10 -kappa 10\n\n", 
            prog_name);
 }
 
@@ -59,6 +65,9 @@ int main(int argc, char *argv[]) {
     double star_radius = 7.0;
     int include_doppler = 0;
     char opacity_type[20] = "kramers";
+    double opacity_multiplier = 1.0;
+    int octant_mode = 0;
+    int nrays_octant = 10;
     
     /* Ni-56 parameters */
     int enable_ni56 = 0;
@@ -74,6 +83,9 @@ int main(int argc, char *argv[]) {
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "-axis") == 0 && i + 1 < argc) {
             axis = argv[++i][0];
+        } else if (strcmp(argv[i], "-octant") == 0 && i + 1 < argc) {
+            octant_mode = 1;
+            nrays_octant = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-nfreq") == 0 && i + 1 < argc) {
             nfreq = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-mass") == 0 && i + 1 < argc) {
@@ -82,6 +94,8 @@ int main(int argc, char *argv[]) {
             star_radius = atof(argv[++i]);
         } else if (strcmp(argv[i], "-opacity") == 0 && i + 1 < argc) {
             strncpy(opacity_type, argv[++i], sizeof(opacity_type) - 1);
+        } else if (strcmp(argv[i], "-kappa") == 0 && i + 1 < argc) {
+            opacity_multiplier = atof(argv[++i]);
         } else if (strcmp(argv[i], "-ni56") == 0 && i + 1 < argc) {
             enable_ni56 = 1;
             ni56_mass = atof(argv[++i]);
@@ -147,6 +161,9 @@ int main(int argc, char *argv[]) {
     spec.freq_min = 1e14;  /* ~30,000 Angstrom (IR) */
     spec.freq_max = 1e16;  /* ~300 Angstrom (UV) */
     spec.include_doppler = include_doppler;
+    spec.opacity_multiplier = opacity_multiplier;
+    spec.octant_mode = octant_mode;
+    spec.nrays_octant = nrays_octant;
     strncpy(spec.opacity_type, opacity_type, sizeof(spec.opacity_type) - 1);
     
     /* Perform ray tracing */
