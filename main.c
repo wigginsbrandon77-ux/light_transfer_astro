@@ -159,7 +159,7 @@ int main(int argc, char *argv[]) {
     spec.axis = axis;
     spec.nfreq = nfreq;
     spec.freq_min = 1e14;  /* ~30,000 Angstrom (IR) */
-    spec.freq_max = 1e16;  /* ~300 Angstrom (UV) */
+    spec.freq_max = 1e18;  /* ~300 Angstrom (UV) */
     spec.include_doppler = include_doppler;
     spec.opacity_multiplier = opacity_multiplier;
     spec.octant_mode = octant_mode;

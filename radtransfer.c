@@ -36,7 +36,20 @@ void free_3d_array(double ***arr, int nx, int ny) {
 }
 
 /*
- * Set up code unit conversions
+ * Set up code unit conversions.
+ *
+ * IMPORTANT — what star_mass and star_radius mean here:
+ *   star_mass   = physical mass of ONE CODE MASS UNIT, in solar masses.
+ *   star_radius = physical length of ONE CODE LENGTH UNIT, in solar radii.
+ *
+ * These are NOT the total stellar mass/radius.  Because this profile has its
+ * surface at r ≈ 1.871 code units and a total code mass of 2.0, the mapping
+ * for a 26 M☉ / 12 R☉ star is:
+ *   star_mass   = 26.0 / 2.0    = 13.0   (Msun per code mass unit)
+ *   star_radius = 12.0 / 1.871  ≈  6.41  (Rsun per code length unit)
+ *
+ * Using the total stellar mass/radius directly will mis-scale densities by
+ * (r_surface)³ / M_code and temperatures by a similar factor.
  */
 void setup_units(StellarData *data) {
     /* Length unit based on stellar radius */
@@ -238,19 +251,32 @@ double opacity_kramers(double rho, double T, double multiplier) {
 }
 
 /*
- * Free-free opacity κ_ff ∝ ρ T^(-7/2) ν^(-3) in cm²/g
- * This is thermal bremsstrahlung absorption
+ * Monochromatic free-free (bremsstrahlung) opacity κ_ff in cm²/g
+ *
+ * Derived from the volumetric absorption coefficient (Rybicki & Lightman 5.18):
+ *   α_ff [cm⁻¹] = 3.7e8 · nₑ · nᵢ · T^{-1/2} · ν^{-3} · (1 - exp(-hν/kT)) · g_ff
+ *
+ * Converting to mass opacity: κ = α/ρ, with nₑ = nᵢ ≈ ρ/m_p for fully ionized H-He:
+ *   κ_ff [cm²/g] = 3.7e8 · (ρ/m_p²) · T^{-1/2} · ν^{-3} · stim_correction
+ *
+ * NOTE: The Rosseland mean of this (integrated over ν) gives the familiar
+ * T^{-7/2} Kramers scaling — that exponent must NOT be used for the
+ * monochromatic opacity, which has T^{-1/2}.
  */
 double opacity_freefree(double rho, double T, double nu, double multiplier) {
-    /* Add floors to avoid issues */
-    if (rho < 1e-15) rho = 1e-15;
-    if (T < 1000.0) T = 1000.0;
-    if (nu < 1e13) nu = 1e13;
-    
-    /* Normalization for free-free (approximate, includes Gaunt factor ~ 1) */
-    double kappa_ff_0 = 3.7e8;  /* cm^5 g^-2 K^3.5 Hz^3 */
-    
-    return multiplier * kappa_ff_0 * rho * pow(T, -3.5) * pow(nu, -3.0);
+    if (rho < 1e-20) rho = 1e-20;
+    if (T < 1000.0)  T   = 1000.0;
+    if (nu < 1e8)    nu  = 1e8;
+
+    /* Stimulated emission correction (1 - exp(-hν/kT)) */
+    double x = (H_CGS * nu) / (K_CGS * T);
+    double stim = (x > 100.0) ? 1.0 : (1.0 - exp(-x));
+
+    /* Gaunt factor (free-free, ≈ 1 for a rough calculation) */
+    double g_ff = 1.0;
+
+    return multiplier * 3.7e8 * (rho / (M_P_CGS * M_P_CGS))
+           * pow(T, -0.5) * pow(nu, -3.0) * stim * g_ff;
 }
 
 /*
@@ -772,7 +798,13 @@ void write_spectrum(const char *filename, StellarData *data, SpectrumData *spec)
     fprintf(fp, "#   - Wavelength bands:  UV (< 3000 Å), Optical (3000-7000 Å),\n");
     fprintf(fp, "#                        IR (> 7000 Å)\n");
     fprintf(fp, "#\n");
-    fprintf(fp, "# EXAMPLE PLOTS (copy into Excel, Python, or ask an LLM):\n");
+    fprintf(fp, "# FREQUENCY RANGE NOTE:\n");
+    fprintf(fp, "#   The photospheric temperature of a hot star (T_phot ~ 1e5 K) puts the\n");
+    fprintf(fp, "#   Wien peak at lambda ~ 200-300 Ang (nu ~ 1e16 Hz).\n");
+    fprintf(fp, "#   Sampling only 1e13-1e15 Hz captures the Rayleigh-Jeans TAIL, which\n");
+    fprintf(fp, "#   appears as a featureless power law — NOT a blackbody turnover.\n");
+    fprintf(fp, "#   Recommended range to bracket the peak: freq_min=1e14, freq_max=1e18 Hz.\n");
+    fprintf(fp, "#\n");
     fprintf(fp, "#   Excel: Select columns 1 and 3, insert scatter plot, set log scales\n");
     fprintf(fp, "#   Python: import numpy as np; import matplotlib.pyplot as plt\n");
     fprintf(fp, "#           data = np.loadtxt('spectrum.txt')\n");
